@@ -40,8 +40,10 @@ public enum HotkeyMode: String, Sendable, CaseIterable {
 public final class HotkeyManager {
     private let fnMonitor = FnHotkeyMonitor()
     private let rightOptionMonitor = RightOptionHotkeyMonitor()
+    private let forwardMouseButtonMonitor = MouseButtonHotkeyMonitor()
 
     public static let rightOptionDefaultsKey = "murmur.rightOptionHoldToTalk"
+    public static let forwardMouseButtonDefaultsKey = "murmur.forwardMouseButtonHoldToTalk"
 
     public init() {}
 
@@ -103,9 +105,24 @@ public final class HotkeyManager {
         rightOptionMonitor.setEnabled(enabled)
     }
 
+    /// Register a hold-to-talk monitor for the mouse Forward button that shortcut changes leave intact.
+    public func registerForwardMouseButtonHold(
+        onButtonDown: @escaping @MainActor () -> Void,
+        onButtonUp: @escaping @MainActor () -> Void
+    ) {
+        forwardMouseButtonMonitor.onButtonDown = { Task { @MainActor in onButtonDown() } }
+        forwardMouseButtonMonitor.onButtonUp = { Task { @MainActor in onButtonUp() } }
+        setForwardMouseButtonHoldEnabled(UserDefaults.standard.bool(forKey: Self.forwardMouseButtonDefaultsKey))
+    }
+
+    public func setForwardMouseButtonHoldEnabled(_ enabled: Bool) {
+        forwardMouseButtonMonitor.setEnabled(enabled)
+    }
+
     public func unregister() {
         KeyboardShortcuts.removeAllHandlers()
         fnMonitor.setShortcut(nil)
         rightOptionMonitor.setEnabled(false)
+        forwardMouseButtonMonitor.setEnabled(false)
     }
 }

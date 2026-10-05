@@ -683,6 +683,7 @@ private struct ColourThemePreview: View {
 
 private struct ShortcutPane: View {
     @AppStorage(HotkeyManager.rightOptionDefaultsKey) private var rightOptionHoldToTalk = false
+    @AppStorage(HotkeyManager.forwardMouseButtonDefaultsKey) private var forwardMouseButtonHoldToTalk = false
 
     var body: some View {
         Form {
@@ -716,6 +717,13 @@ private struct ShortcutPane: View {
                         (NSApp.delegate as? AppDelegate)?.setRightOptionHoldEnabled(enabled)
                     }
                 Text("Hold the right ⌥ key to record; release it to transcribe. Requires Accessibility access. Your toggle shortcut stays available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Hold the mouse Forward button to dictate", isOn: $forwardMouseButtonHoldToTalk)
+                    .onChange(of: forwardMouseButtonHoldToTalk) { enabled in
+                        (NSApp.delegate as? AppDelegate)?.setForwardMouseButtonHoldEnabled(enabled)
+                    }
+                Text("Hold your mouse's Forward side button (button 5) to record; release it to transcribe. The app under the cursor still receives the click, so a browser may navigate forward.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

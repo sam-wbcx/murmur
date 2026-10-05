@@ -30,6 +30,11 @@ struct MurmurApp {
 
 /// Shared history limit used by storage and the Settings picker.
 /// `0` means no transcripts are saved; otherwise the newest entries are kept.
+private enum HoldToTalkSource {
+    case rightOption
+    case forwardMouseButton
+}
+
 enum HistorySettings {
     static let maxEntriesKey = "historyMaxEntries"
     static let defaultMaxEntries = 50
@@ -85,9 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let textInserter: any TextInserter = ClipboardPasteInserter()
     private let hotkey = HotkeyManager()
-    private var rightOptionHeld = false
-    private var rightOptionOwnsRecording = false
-    private var rightOptionHoldGeneration = 0
+    private var heldHoldToTalkSources: Set<HoldToTalkSource> = []
+    private var holdToTalkOwner: HoldToTalkSource?
+    private var holdToTalkGeneration = 0
 
     /// Owns polish-model downloads for the app lifetime, including while the
     /// Settings sheet is open. Connects download state to `appState`.
@@ -652,8 +657,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.registerToggle { [weak self] in self?.toggleRecording() }
         hotkey.registerFunctionKeyToggle { [weak self] in self?.toggleRecording() }
         hotkey.registerRightOptionHold(
-            onKeyDown: { [weak self] in self?.rightOptionDown() },
-            onKeyUp: { [weak self] in self?.rightOptionUp() }
+            onKeyDown: { [weak self] in self?.holdToTalkDown(.rightOption) },
+            onKeyUp: { [weak self] in self?.holdToTalkUp(.rightOption) }
+        )
+        hotkey.registerForwardMouseButtonHold(
+            onButtonDown: { [weak self] in self?.holdToTalkDown(.forwardMouseButton) },
+            onButtonUp: { [weak self] in self?.holdToTalkUp(.forwardMouseButton) }
         )
     }
 
@@ -663,36 +672,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func rightOptionDown() {
-        guard !rightOptionHeld else { return }
-        rightOptionHeld = true
+    func setForwardMouseButtonHoldEnabled(_ enabled: Bool) {
+        hotkey.setForwardMouseButtonHoldEnabled(enabled)
+    }
+
+    @MainActor
+    private func holdToTalkDown(_ source: HoldToTalkSource) {
+        guard heldHoldToTalkSources.insert(source).inserted else { return }
         switch appState.phase {
         case .idle, .ready, .error:
             guard localEngineReady() else { return }
-            rightOptionOwnsRecording = true
-            rightOptionHoldGeneration += 1
+            holdToTalkOwner = source
+            holdToTalkGeneration += 1
             appState.phase = .starting
-            startRecording(holdGeneration: rightOptionHoldGeneration)
+            startRecording(holdGeneration: holdToTalkGeneration)
         default:
-            // A toggle recording keeps its owner.
+            // A toggle recording, or one held by another source, keeps its owner.
             break
         }
     }
 
     @MainActor
-    private func rightOptionUp() {
-        guard rightOptionHeld else { return }
-        rightOptionHeld = false
-        rightOptionHoldGeneration += 1
-        guard rightOptionOwnsRecording else { return }
-        rightOptionOwnsRecording = false
+    private func holdToTalkUp(_ source: HoldToTalkSource) {
+        guard heldHoldToTalkSources.remove(source) != nil else { return }
+        guard holdToTalkOwner == source else { return }
+        holdToTalkGeneration += 1
+        holdToTalkOwner = nil
         if appState.phase == .recording { stopAndTranscribe() }
     }
 
     @MainActor
-    private func releaseRightOptionOwnershipOnFailure(_ holdGeneration: Int?) {
-        guard let holdGeneration, holdGeneration == rightOptionHoldGeneration else { return }
-        rightOptionOwnsRecording = false
+    private func releaseHoldToTalkOwnershipOnFailure(_ holdGeneration: Int?) {
+        guard let holdGeneration, holdGeneration == holdToTalkGeneration else { return }
+        holdToTalkOwner = nil
     }
 
     @MainActor
@@ -702,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard localEngineReady() else { return }
             startRecording()
         case .recording:
-            rightOptionOwnsRecording = false
+            holdToTalkOwner = nil
             stopAndTranscribe()
         case .warming, .starting, .transcribing, .polishing:
             // Ignore — the user gets a hotkey-tap during a transition; we just drop it.
@@ -786,18 +798,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.phase = .starting
         Task {
             if recordingOutputPlan == .insertFinalizedChunks && !PasteService.isAccessibilityTrusted() {
-                releaseRightOptionOwnershipOnFailure(holdGeneration)
+                releaseHoldToTalkOwnershipOnFailure(holdGeneration)
                 appState.phase = .error("Inline mode needs Accessibility permission to paste each phrase. Grant it in System Settings.")
                 return
             }
             guard await AudioRecorder.requestPermission() else {
                 await MainActor.run {
-                    releaseRightOptionOwnershipOnFailure(holdGeneration)
+                    releaseHoldToTalkOwnershipOnFailure(holdGeneration)
                     appState.phase = .error("Microphone permission denied. Enable in System Settings → Privacy & Security → Microphone.")
                 }
                 return
             }
-            if let holdGeneration, holdGeneration != rightOptionHoldGeneration {
+            if let holdGeneration, holdGeneration != holdToTalkGeneration {
                 appState.phase = .idle
                 return
             }
@@ -867,7 +879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 recorder.framesHandler = nil
             }
 
-            if let holdGeneration, holdGeneration != rightOptionHoldGeneration {
+            if let holdGeneration, holdGeneration != holdToTalkGeneration {
                 await tearDownFramesPump()
                 if let streamer = recordingStreamer { await streamer.cancel() }
                 await finishInlineInsertion()
@@ -889,7 +901,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     startElapsedTimer()
                     playSound("Tink")
                 }
-                if let holdGeneration, holdGeneration != rightOptionHoldGeneration,
+                if let holdGeneration, holdGeneration != holdToTalkGeneration,
                    appState.phase == .recording {
                     stopAndTranscribe()
                 }
@@ -899,7 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await finishInlineInsertion()
                 await finishOverlayPreview()
                 await MainActor.run {
-                    releaseRightOptionOwnershipOnFailure(holdGeneration)
+                    releaseHoldToTalkOwnershipOnFailure(holdGeneration)
                     appState.phase = .error("Recording failed: \(error)")
                     schedulePolishIdleUnload()
                 }
